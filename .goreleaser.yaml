@@ -1,0 +1,28 @@
+version: 2
+project_name: fahscan
+builds:
+  - id: fahscan
+    main: ./cmd/fahscan
+    binary: fahscan
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+brews:
+  - name: fahscan
+    repository:
+      owner: example
+      name: homebrew-fahscan
+    directory: Formula
+    homepage: https://example.invalid/fahscan
+    description: CLI-only defensive vulnerability scanner
+    license: MIT

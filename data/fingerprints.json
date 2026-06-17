@@ -1,0 +1,5 @@
+{
+  "http": ["server", "x-powered-by", "title"],
+  "tls": ["issuer", "subject", "dns_names", "validity"],
+  "tcp": ["banner", "port"]
+}
