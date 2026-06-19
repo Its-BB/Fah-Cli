@@ -1,0 +1,35 @@
+[
+  {
+    "cve_id": "CVE-2021-41773",
+    "vendor": "apache",
+    "product": "apache",
+    "affected_version": "2.4.49",
+    "severity": "critical",
+    "cvss": 9.8,
+    "description": "Apache HTTP Server 2.4.49 path normalization flaw. FahScan only reports a passive local match and does not validate exploitability.",
+    "recommendation": "Upgrade Apache HTTP Server to a fixed release and confirm the exposed version.",
+    "references": ["https://httpd.apache.org/security/vulnerabilities_24.html"]
+  },
+  {
+    "cve_id": "CVE-2022-0543",
+    "vendor": "redis",
+    "product": "redis",
+    "affected_version": "",
+    "severity": "critical",
+    "cvss": 10.0,
+    "description": "Redis package vulnerability in specific Linux distributions. FahScan reports only a passive service-name match.",
+    "recommendation": "Review distribution package advisories and upgrade Redis packages.",
+    "references": ["https://nvd.nist.gov/vuln/detail/CVE-2022-0543"]
+  },
+  {
+    "cve_id": "CVE-2021-44228",
+    "vendor": "apache",
+    "product": "log4j",
+    "affected_version": "2",
+    "severity": "critical",
+    "cvss": 10.0,
+    "description": "Apache Log4j remote code execution vulnerability. FahScan only reports passive metadata matches.",
+    "recommendation": "Inventory Java applications and upgrade Log4j to a fixed version.",
+    "references": ["https://logging.apache.org/log4j/2.x/security.html"]
+  }
+]
