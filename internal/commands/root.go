@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -9,10 +9,14 @@ import (
 	"strings"
 
 	"fahscan/internal/app"
+	"fahscan/internal/compare"
 	"fahscan/internal/config"
+	"fahscan/internal/database"
+	"fahscan/internal/exporter"
+	"fahscan/internal/history"
+	"fahscan/internal/inventory"
 	"fahscan/internal/output"
-	"fahscan/internal/report"
-	"fahscan/internal/scanner"
+	"fahscan/pkg/types"
 	"github.com/spf13/cobra"
 )
 
@@ -21,8 +25,8 @@ const version = "1.0.0"
 func Execute() error { return rootCmd().Execute() }
 
 func rootCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "fahscan", Short: "Defensive scanner with reporting", SilenceUsage: true, SilenceErrors: true}
-	cmd.AddCommand(versionCmd(), initCmd(), configCmd(), portsCmd(), scanCmd(), reportCmd())
+	cmd := &cobra.Command{Use: "fahscan", Short: "Defensive scanner inventory and history", SilenceUsage: true, SilenceErrors: true}
+	cmd.AddCommand(versionCmd(), initCmd(), configCmd(), inventoryCmd(), historyCmd(), compareCmd())
 	return cmd
 }
 
@@ -59,109 +63,137 @@ func configCmd() *cobra.Command {
 	return cmd
 }
 
-func portsCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "ports"}
-	cmd.AddCommand(&cobra.Command{Use: "profile <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		ports, err := scanner.ProfilePorts(args[0])
-		if err != nil {
-			return err
-		}
-		parts := make([]string, len(ports))
-		for i, port := range ports {
-			parts[i] = fmt.Sprint(port)
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), strings.Join(parts, ","))
-		return nil
-	}})
-	return cmd
-}
-
-func scanCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "scan"}
-	run := &cobra.Command{Use: "run <target>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		profile, _ := cmd.Flags().GetString("profile")
-		ports, _ := cmd.Flags().GetString("ports")
-		auth, _ := cmd.Flags().GetBool("i-am-authorized")
-		a, err := app.New()
-		if err != nil {
-			return err
-		}
-		defer a.Close()
-		scan, services, findings, err := a.RunScan(context.Background(), args[0], profile, ports, auth)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "scan %d completed\nrisk score: %d\nopen ports: %d\nfindings: %d\n", scan.ID, scan.RiskScore, len(services), len(findings))
-		return nil
-	}}
-	run.Flags().String("profile", "quick", "scan profile")
-	run.Flags().String("ports", "", "comma-separated custom TCP ports")
-	run.Flags().Bool("i-am-authorized", false, "confirm authorization")
-	cmd.AddCommand(run)
+func inventoryCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "inventory"}
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
 		a, err := app.New()
 		if err != nil {
 			return err
 		}
 		defer a.Close()
-		scans, err := a.DB.ListScans()
+		snapshot, err := inventorySnapshot(a.DB)
 		if err != nil {
 			return err
 		}
 		var rows [][]string
-		for _, s := range scans {
-			rows = append(rows, []string{strconv.FormatInt(s.ID, 10), s.Target, s.Profile, strconv.Itoa(s.RiskScore)})
+		for _, asset := range snapshot.Assets {
+			rows = append(rows, []string{asset.Target, fmt.Sprint(asset.ScanCount), joinInts(asset.OpenPorts), strings.Join(asset.Services, ","), asset.HighestSeverity, asset.Exposure})
 		}
-		output.Table(cmd.OutOrStdout(), []string{"ID", "Target", "Profile", "Risk"}, rows)
+		output.Table(cmd.OutOrStdout(), []string{"Target", "Scans", "Ports", "Services", "Highest", "Exposure"}, rows)
 		return nil
 	}})
-	return cmd
-}
-
-func reportCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "report"}
-	cmd.AddCommand(&cobra.Command{Use: "view <scan-id>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		a, id, err := appWithID(args[0])
-		if err != nil {
-			return err
-		}
-		defer a.Close()
-		scan, services, findings, err := a.DB.Scan(id)
-		if err != nil {
-			return err
-		}
-		body, err := report.Render(report.Data(scan, services, findings), "txt")
-		if err != nil {
-			return err
-		}
-		fmt.Fprint(cmd.OutOrStdout(), string(body))
-		return nil
-	}})
-	export := &cobra.Command{Use: "export <scan-id>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		format, _ := cmd.Flags().GetString("format")
+	export := &cobra.Command{Use: "export", RunE: func(cmd *cobra.Command, args []string) error {
 		out, _ := cmd.Flags().GetString("out")
+		format, _ := cmd.Flags().GetString("format")
 		if out == "" {
 			return fmt.Errorf("--out is required")
 		}
-		a, id, err := appWithID(args[0])
+		a, err := app.New()
 		if err != nil {
 			return err
 		}
 		defer a.Close()
-		scan, services, findings, err := a.DB.Scan(id)
+		snapshot, err := inventorySnapshot(a.DB)
 		if err != nil {
 			return err
 		}
-		if err := report.Write(out, format, report.Data(scan, services, findings)); err != nil {
+		var body []byte
+		switch strings.ToLower(format) {
+		case "json":
+			body, err = json.MarshalIndent(snapshot, "", "  ")
+		case "csv":
+			body, err = exporter.InventoryCSV(snapshot)
+		default:
+			err = fmt.Errorf("unsupported inventory format %q", format)
+		}
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(out, body, 0o600); err != nil {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), out)
 		return nil
 	}}
-	export.Flags().String("format", "json", "json, sarif, html, markdown, or txt")
+	export.Flags().String("format", "json", "json or csv")
 	export.Flags().String("out", "", "output path")
 	cmd.AddCommand(export)
 	return cmd
+}
+
+func historyCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "history", RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := app.New()
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		timeline, err := historyTimeline(a.DB)
+		if err != nil {
+			return err
+		}
+		format, _ := cmd.Flags().GetString("format")
+		if strings.EqualFold(format, "json") {
+			return output.JSON(cmd.OutOrStdout(), timeline)
+		}
+		output.KV(cmd.OutOrStdout(), "targets", timeline.Overall.TargetCount)
+		output.KV(cmd.OutOrStdout(), "scans", timeline.Overall.ScanCount)
+		output.KV(cmd.OutOrStdout(), "average_risk", fmt.Sprintf("%.1f", timeline.Overall.AverageRisk))
+		return nil
+	}}
+	cmd.Flags().String("format", "table", "table or json")
+	return cmd
+}
+
+func compareCmd() *cobra.Command {
+	return &cobra.Command{Use: "compare <base-scan-id> <new-scan-id>", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		a, baseID, err := appWithID(args[0])
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		newID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			return err
+		}
+		base, baseServices, baseFindings, err := a.DB.Scan(baseID)
+		if err != nil {
+			return err
+		}
+		next, nextServices, nextFindings, err := a.DB.Scan(newID)
+		if err != nil {
+			return err
+		}
+		return output.JSON(cmd.OutOrStdout(), compare.Scans(base, baseServices, baseFindings, next, nextServices, nextFindings))
+	}}
+}
+
+func inventorySnapshot(db *database.DB) (inventory.Snapshot, error) {
+	scans, err := db.ListScans()
+	if err != nil {
+		return inventory.Snapshot{}, err
+	}
+	servicesByScan := map[int64][]types.Service{}
+	findingsByScan := map[int64][]types.Finding{}
+	for _, scan := range scans {
+		servicesByScan[scan.ID], _ = db.Services(scan.ID)
+		findingsByScan[scan.ID], _ = db.Findings(scan.ID)
+	}
+	return inventory.Build(scans, servicesByScan, findingsByScan), nil
+}
+
+func historyTimeline(db *database.DB) (history.Timeline, error) {
+	scans, err := db.ListScans()
+	if err != nil {
+		return history.Timeline{}, err
+	}
+	servicesByScan := map[int64][]types.Service{}
+	findingsByScan := map[int64][]types.Finding{}
+	for _, scan := range scans {
+		servicesByScan[scan.ID], _ = db.Services(scan.ID)
+		findingsByScan[scan.ID], _ = db.Findings(scan.ID)
+	}
+	return history.Build(scans, servicesByScan, findingsByScan), nil
 }
 
 func appWithID(raw string) (*app.App, int64, error) {
@@ -173,4 +205,10 @@ func appWithID(raw string) (*app.App, int64, error) {
 	return a, id, err
 }
 
-func init() { _ = os.Stdout }
+func joinInts(values []int) string {
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = strconv.Itoa(value)
+	}
+	return strings.Join(parts, ",")
+}
