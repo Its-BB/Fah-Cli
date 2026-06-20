@@ -1,21 +1,19 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
+	"fahscan/internal/advisor"
 	"fahscan/internal/app"
-	"fahscan/internal/compare"
 	"fahscan/internal/config"
-	"fahscan/internal/database"
-	"fahscan/internal/exporter"
-	"fahscan/internal/history"
-	"fahscan/internal/inventory"
+	"fahscan/internal/health"
+	"fahscan/internal/metrics"
 	"fahscan/internal/output"
+	"fahscan/internal/profile"
+	"fahscan/internal/schedule"
 	"fahscan/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -25,8 +23,8 @@ const version = "1.0.0"
 func Execute() error { return rootCmd().Execute() }
 
 func rootCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "fahscan", Short: "Defensive scanner inventory and history", SilenceUsage: true, SilenceErrors: true}
-	cmd.AddCommand(versionCmd(), initCmd(), configCmd(), inventoryCmd(), historyCmd(), compareCmd())
+	cmd := &cobra.Command{Use: "fahscan", Short: "Defensive scanner operations and advice", SilenceUsage: true, SilenceErrors: true}
+	cmd.AddCommand(versionCmd(), initCmd(), configCmd(), healthCmd(), profileCmd(), scheduleCmd(), metricsCmd(), adviceCmd())
 	return cmd
 }
 
@@ -63,152 +61,116 @@ func configCmd() *cobra.Command {
 	return cmd
 }
 
-func inventoryCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "inventory"}
-	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := app.New()
-		if err != nil {
-			return err
-		}
-		defer a.Close()
-		snapshot, err := inventorySnapshot(a.DB)
-		if err != nil {
-			return err
-		}
-		var rows [][]string
-		for _, asset := range snapshot.Assets {
-			rows = append(rows, []string{asset.Target, fmt.Sprint(asset.ScanCount), joinInts(asset.OpenPorts), strings.Join(asset.Services, ","), asset.HighestSeverity, asset.Exposure})
-		}
-		output.Table(cmd.OutOrStdout(), []string{"Target", "Scans", "Ports", "Services", "Highest", "Exposure"}, rows)
-		return nil
-	}})
-	export := &cobra.Command{Use: "export", RunE: func(cmd *cobra.Command, args []string) error {
-		out, _ := cmd.Flags().GetString("out")
-		format, _ := cmd.Flags().GetString("format")
-		if out == "" {
-			return fmt.Errorf("--out is required")
-		}
-		a, err := app.New()
-		if err != nil {
-			return err
-		}
-		defer a.Close()
-		snapshot, err := inventorySnapshot(a.DB)
-		if err != nil {
-			return err
-		}
-		var body []byte
-		switch strings.ToLower(format) {
-		case "json":
-			body, err = json.MarshalIndent(snapshot, "", "  ")
-		case "csv":
-			body, err = exporter.InventoryCSV(snapshot)
-		default:
-			err = fmt.Errorf("unsupported inventory format %q", format)
-		}
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(out, body, 0o600); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), out)
-		return nil
-	}}
-	export.Flags().String("format", "json", "json or csv")
-	export.Flags().String("out", "", "output path")
-	cmd.AddCommand(export)
-	return cmd
-}
-
-func historyCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "history", RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := app.New()
-		if err != nil {
-			return err
-		}
-		defer a.Close()
-		timeline, err := historyTimeline(a.DB)
-		if err != nil {
-			return err
-		}
+func healthCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "health", RunE: func(cmd *cobra.Command, args []string) error {
+		report := health.Run()
 		format, _ := cmd.Flags().GetString("format")
 		if strings.EqualFold(format, "json") {
-			return output.JSON(cmd.OutOrStdout(), timeline)
+			return output.JSON(cmd.OutOrStdout(), report)
 		}
-		output.KV(cmd.OutOrStdout(), "targets", timeline.Overall.TargetCount)
-		output.KV(cmd.OutOrStdout(), "scans", timeline.Overall.ScanCount)
-		output.KV(cmd.OutOrStdout(), "average_risk", fmt.Sprintf("%.1f", timeline.Overall.AverageRisk))
+		output.KV(cmd.OutOrStdout(), "overall", report.Overall)
+		var rows [][]string
+		for _, check := range report.Checks {
+			rows = append(rows, []string{check.ID, string(check.Status), check.Message, check.Remediation})
+		}
+		output.Table(cmd.OutOrStdout(), []string{"ID", "Status", "Message", "Remediation"}, rows)
+		if report.Overall == health.Fail {
+			return fmt.Errorf("one or more health checks failed")
+		}
 		return nil
 	}}
 	cmd.Flags().String("format", "table", "table or json")
 	return cmd
 }
 
-func compareCmd() *cobra.Command {
-	return &cobra.Command{Use: "compare <base-scan-id> <new-scan-id>", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
-		a, baseID, err := appWithID(args[0])
+func profileCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "profile"}
+	cmd.AddCommand(&cobra.Command{Use: "list", Run: func(cmd *cobra.Command, args []string) {
+		var rows [][]string
+		for _, def := range profile.List() {
+			rows = append(rows, []string{def.Name, fmt.Sprint(len(def.Ports)), strings.Join(def.Families, ","), def.Description})
+		}
+		output.Table(cmd.OutOrStdout(), []string{"Name", "Ports", "Families", "Description"}, rows)
+	}})
+	compose := &cobra.Command{Use: "compose", RunE: func(cmd *cobra.Command, args []string) error {
+		names, _ := cmd.Flags().GetStringSlice("include")
+		families, _ := cmd.Flags().GetStringSlice("family")
+		includePorts, _ := cmd.Flags().GetIntSlice("port")
+		excludePorts, _ := cmd.Flags().GetIntSlice("exclude-port")
+		maxPorts, _ := cmd.Flags().GetInt("max")
+		result, err := profile.Compose(profile.ComposeRequest{IncludeProfiles: names, IncludeFamilies: families, IncludePorts: includePorts, ExcludePorts: excludePorts, MaxPorts: maxPorts})
+		if err != nil {
+			return err
+		}
+		return output.JSON(cmd.OutOrStdout(), result)
+	}}
+	compose.Flags().StringSlice("include", []string{"quick"}, "profiles to include")
+	compose.Flags().StringSlice("family", nil, "families to include")
+	compose.Flags().IntSlice("port", nil, "additional ports")
+	compose.Flags().IntSlice("exclude-port", nil, "ports to exclude")
+	compose.Flags().Int("max", 100, "maximum ports")
+	cmd.AddCommand(compose)
+	return cmd
+}
+
+func scheduleCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "schedule"}
+	preview := &cobra.Command{Use: "preview", RunE: func(cmd *cobra.Command, args []string) error {
+		plan := schedule.ConservativePlan()
+		eval := schedule.Evaluate(plan, time.Now(), 30*24*time.Hour)
+		return output.JSON(cmd.OutOrStdout(), eval)
+	}}
+	cmd.AddCommand(preview)
+	return cmd
+}
+
+func metricsCmd() *cobra.Command {
+	return &cobra.Command{Use: "metrics", RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := app.New()
 		if err != nil {
 			return err
 		}
 		defer a.Close()
-		newID, err := strconv.ParseInt(args[1], 10, 64)
+		scans, err := a.DB.ListScans()
 		if err != nil {
 			return err
 		}
-		base, baseServices, baseFindings, err := a.DB.Scan(baseID)
-		if err != nil {
-			return err
+		servicesByScan := map[int64][]types.Service{}
+		findingsByScan := map[int64][]types.Finding{}
+		for _, scan := range scans {
+			servicesByScan[scan.ID], _ = a.DB.Services(scan.ID)
+			findingsByScan[scan.ID], _ = a.DB.Findings(scan.ID)
 		}
-		next, nextServices, nextFindings, err := a.DB.Scan(newID)
-		if err != nil {
-			return err
-		}
-		return output.JSON(cmd.OutOrStdout(), compare.Scans(base, baseServices, baseFindings, next, nextServices, nextFindings))
+		return output.JSON(cmd.OutOrStdout(), metrics.Build(scans, servicesByScan, findingsByScan))
 	}}
 }
 
-func inventorySnapshot(db *database.DB) (inventory.Snapshot, error) {
-	scans, err := db.ListScans()
-	if err != nil {
-		return inventory.Snapshot{}, err
-	}
-	servicesByScan := map[int64][]types.Service{}
-	findingsByScan := map[int64][]types.Finding{}
-	for _, scan := range scans {
-		servicesByScan[scan.ID], _ = db.Services(scan.ID)
-		findingsByScan[scan.ID], _ = db.Findings(scan.ID)
-	}
-	return inventory.Build(scans, servicesByScan, findingsByScan), nil
+func adviceCmd() *cobra.Command {
+	return &cobra.Command{Use: "advice <scan-id>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := app.New()
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		id, err := parseID(args[0])
+		if err != nil {
+			return err
+		}
+		scan, services, findings, err := a.DB.Scan(id)
+		if err != nil {
+			return err
+		}
+		return output.JSON(cmd.OutOrStdout(), advisor.Build(advisor.Context{Scan: scan, Services: services, Findings: findings, Config: a.Config}))
+	}}
 }
 
-func historyTimeline(db *database.DB) (history.Timeline, error) {
-	scans, err := db.ListScans()
-	if err != nil {
-		return history.Timeline{}, err
+func parseID(raw string) (int64, error) {
+	var id int64
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid id %q", raw)
+		}
+		id = id*10 + int64(r-'0')
 	}
-	servicesByScan := map[int64][]types.Service{}
-	findingsByScan := map[int64][]types.Finding{}
-	for _, scan := range scans {
-		servicesByScan[scan.ID], _ = db.Services(scan.ID)
-		findingsByScan[scan.ID], _ = db.Findings(scan.ID)
-	}
-	return history.Build(scans, servicesByScan, findingsByScan), nil
-}
-
-func appWithID(raw string) (*app.App, int64, error) {
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return nil, 0, fmt.Errorf("invalid id %q", raw)
-	}
-	a, err := app.New()
-	return a, id, err
-}
-
-func joinInts(values []int) string {
-	parts := make([]string, len(values))
-	for i, value := range values {
-		parts[i] = strconv.Itoa(value)
-	}
-	return strings.Join(parts, ",")
+	return id, nil
 }
