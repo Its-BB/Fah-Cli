@@ -1,0 +1,41 @@
+package knowledge
+
+var ruleCatalog = []Rule{
+	{ID: "FS-HTTP-001", Category: "http", Title: "HTTP service without TLS", Signal: "cleartext HTTP response", Severity: "medium", Recommendation: "Redirect HTTP to HTTPS and serve sensitive workflows over TLS.", Tags: []string{"passive", "transport", "hardening"}},
+	{ID: "FS-HTTP-002", Category: "http", Title: "Missing Strict-Transport-Security", Signal: "absent HSTS header", Severity: "low", Recommendation: "Set Strict-Transport-Security after HTTPS is deployed correctly.", Tags: []string{"passive", "headers", "hardening"}},
+	{ID: "FS-HTTP-003", Category: "http", Title: "Missing Content-Security-Policy", Signal: "absent CSP header", Severity: "low", Recommendation: "Define a Content-Security-Policy appropriate for the application.", Tags: []string{"passive", "headers", "browser"}},
+	{ID: "FS-HTTP-004", Category: "http", Title: "Missing X-Frame-Options", Signal: "absent frame protection header", Severity: "low", Recommendation: "Set X-Frame-Options or an equivalent CSP frame-ancestors directive.", Tags: []string{"passive", "headers", "browser"}},
+	{ID: "FS-HTTP-005", Category: "http", Title: "Server header disclosure", Signal: "version-bearing Server header", Severity: "low", Recommendation: "Reduce server banner detail where operationally possible.", Tags: []string{"passive", "metadata", "banner"}},
+	{ID: "FS-HTTP-006", Category: "http", Title: "Framework header disclosure", Signal: "X-Powered-By header", Severity: "low", Recommendation: "Remove framework disclosure headers from production responses.", Tags: []string{"passive", "metadata", "banner"}},
+	{ID: "FS-HTTP-007", Category: "http", Title: "Possible default landing page", Signal: "default page title or header", Severity: "info", Recommendation: "Replace default content with an intentional owner-managed page.", Tags: []string{"passive", "content", "inventory"}},
+	{ID: "FS-HTTP-008", Category: "http", Title: "Possible directory listing", Signal: "Index of page title", Severity: "medium", Recommendation: "Disable directory indexes unless explicitly intended.", Tags: []string{"passive", "content", "exposure"}},
+	{ID: "FS-TLS-001", Category: "tls", Title: "Expired certificate", Signal: "certificate NotAfter is in the past", Severity: "high", Recommendation: "Renew and deploy a valid certificate.", Tags: []string{"passive", "certificate", "lifecycle"}},
+	{ID: "FS-TLS-002", Category: "tls", Title: "Certificate expiring soon", Signal: "certificate expires within 30 days", Severity: "medium", Recommendation: "Renew before expiry and verify automation.", Tags: []string{"passive", "certificate", "lifecycle"}},
+	{ID: "FS-TLS-003", Category: "tls", Title: "Self-signed certificate", Signal: "issuer and subject match", Severity: "medium", Recommendation: "Use a certificate issued by a trusted CA when the service is user-facing.", Tags: []string{"passive", "certificate", "trust"}},
+	{ID: "FS-TLS-004", Category: "tls", Title: "Hostname mismatch", Signal: "certificate SAN does not match target", Severity: "high", Recommendation: "Deploy a certificate whose SAN covers the scanned hostname.", Tags: []string{"passive", "certificate", "identity"}},
+	{ID: "FS-DB-001", Category: "database", Title: "Database service exposed", Signal: "database-like service on scanned target", Severity: "medium", Recommendation: "Restrict database listeners to trusted application networks.", Tags: []string{"passive", "network", "database"}},
+	{ID: "FS-ADMIN-001", Category: "admin", Title: "Administrative web surface exposed", Signal: "admin-like port or product metadata", Severity: "medium", Recommendation: "Move administrative surfaces behind explicit access controls.", Tags: []string{"passive", "admin", "exposure"}},
+	{ID: "FS-REMOTE-001", Category: "remote-access", Title: "Remote access service visible", Signal: "SSH, FTP, Telnet, RDP, or similar service", Severity: "info", Recommendation: "Confirm ownership, patching, and access policy for remote access services.", Tags: []string{"passive", "remote-access", "inventory"}},
+}
+
+var portCatalog = []PortRecord{
+	{Port: 21, Protocol: "tcp", Service: "ftp", Category: "remote-access", Description: "FTP control service.", RiskHint: "Prefer encrypted alternatives and restrict exposure.", Tags: []string{"remote-access", "cleartext"}},
+	{Port: 22, Protocol: "tcp", Service: "ssh", Category: "remote-access", Description: "SSH remote administration.", RiskHint: "Confirm patching and key-based access policy.", Tags: []string{"remote-access", "admin"}},
+	{Port: 25, Protocol: "tcp", Service: "smtp", Category: "mail", Description: "SMTP mail transfer.", RiskHint: "Confirm relay policy and banner hygiene.", Tags: []string{"mail", "metadata"}},
+	{Port: 53, Protocol: "tcp", Service: "dns", Category: "dns", Description: "DNS over TCP.", RiskHint: "Confirm zone transfer policy.", Tags: []string{"dns", "infrastructure"}},
+	{Port: 80, Protocol: "tcp", Service: "http", Category: "http", Description: "HTTP web service.", RiskHint: "Prefer HTTPS and set browser security headers.", Tags: []string{"web", "cleartext"}},
+	{Port: 443, Protocol: "tcp", Service: "https", Category: "tls", Description: "HTTPS web service.", RiskHint: "Validate certificate identity and expiry.", Tags: []string{"web", "tls"}},
+	{Port: 445, Protocol: "tcp", Service: "smb", Category: "storage", Description: "SMB file sharing.", RiskHint: "Restrict to trusted internal networks.", Tags: []string{"storage", "windows"}},
+	{Port: 587, Protocol: "tcp", Service: "smtp-submission", Category: "mail", Description: "Authenticated mail submission.", RiskHint: "Require authentication and modern TLS.", Tags: []string{"mail", "tls"}},
+	{Port: 1433, Protocol: "tcp", Service: "mssql", Category: "database", Description: "Microsoft SQL Server.", RiskHint: "Restrict database exposure.", Tags: []string{"database", "microsoft"}},
+	{Port: 1521, Protocol: "tcp", Service: "oracle", Category: "database", Description: "Oracle database listener.", RiskHint: "Restrict database exposure.", Tags: []string{"database", "oracle"}},
+	{Port: 3000, Protocol: "tcp", Service: "web-dev", Category: "http", Description: "Common development web port.", RiskHint: "Confirm this is not an unintended development server.", Tags: []string{"web", "development"}},
+	{Port: 3306, Protocol: "tcp", Service: "mysql", Category: "database", Description: "MySQL or MariaDB database.", RiskHint: "Restrict database exposure.", Tags: []string{"database", "mysql"}},
+	{Port: 5432, Protocol: "tcp", Service: "postgresql", Category: "database", Description: "PostgreSQL database.", RiskHint: "Restrict database exposure.", Tags: []string{"database", "postgres"}},
+	{Port: 6379, Protocol: "tcp", Service: "redis", Category: "cache", Description: "Redis data store.", RiskHint: "Bind to trusted interfaces and require protective controls.", Tags: []string{"cache", "database"}},
+	{Port: 8080, Protocol: "tcp", Service: "http-alt", Category: "http", Description: "Alternate HTTP web service.", RiskHint: "Check for admin panels and default content.", Tags: []string{"web", "admin"}},
+	{Port: 8443, Protocol: "tcp", Service: "https-alt", Category: "tls", Description: "Alternate HTTPS web service.", RiskHint: "Validate TLS and administrative exposure.", Tags: []string{"web", "tls"}},
+	{Port: 9200, Protocol: "tcp", Service: "elasticsearch", Category: "search", Description: "Elasticsearch HTTP API.", RiskHint: "Restrict API access to trusted networks.", Tags: []string{"search", "database"}},
+	{Port: 11211, Protocol: "tcp", Service: "memcached", Category: "cache", Description: "Memcached service.", RiskHint: "Avoid public exposure.", Tags: []string{"cache", "database"}},
+	{Port: 27017, Protocol: "tcp", Service: "mongodb", Category: "database", Description: "MongoDB database.", RiskHint: "Restrict database exposure.", Tags: []string{"database", "mongodb"}},
+}
